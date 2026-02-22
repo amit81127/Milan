@@ -23,6 +23,34 @@ const formatTimestamp = (timestamp: number) => {
     return date.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
 };
 
+const Avatar = ({ src, name, className = "w-11 h-11", isGroup = false }: { src?: string; name?: string; className?: string; isGroup?: boolean }) => {
+    const initials = name ? name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase() : "?";
+
+    if (isGroup) {
+        return (
+            <div className={`${className} bg-zinc-900 dark:bg-zinc-50 rounded-full flex items-center justify-center shadow-inner shrink-0 border-2 border-white dark:border-zinc-900`}>
+                <span className="text-white dark:text-zinc-900 text-[10px] font-bold">GRP</span>
+            </div>
+        );
+    }
+
+    if (!src) {
+        return (
+            <div className={`${className} bg-gradient-to-br from-zinc-100 to-zinc-200 dark:from-zinc-800 dark:to-zinc-900 rounded-full flex items-center justify-center shadow-inner shrink-0 text-zinc-500 dark:text-zinc-400 font-bold text-xs border-2 border-white dark:border-zinc-900`}>
+                {initials}
+            </div>
+        );
+    }
+
+    return (
+        <img
+            src={src}
+            className={`${className} rounded-full object-cover shrink-0 border-2 border-white dark:border-zinc-900`}
+            alt={name || "User"}
+        />
+    );
+};
+
 // --- Main Chat Content Component ---
 function ChatContent() {
     const { user: clerkUser, isLoaded } = useUser();
@@ -34,31 +62,43 @@ function ChatContent() {
     const [selectedConversationId, setSelectedConversationId] = useState<Id<"conversations"> | null>(urlConversationId);
 
     const [searchTerm, setSearchTerm] = useState("");
+    const [debouncedSearchTerm, setDebouncedSearchTerm] = useState("");
     const [newMessageText, setNewMessageText] = useState("");
     const [isCreatingGroup, setIsCreatingGroup] = useState(false);
     const [selectedUserIds, setSelectedUserIds] = useState<Id<"users">[]>([]);
     const [groupName, setGroupName] = useState("");
+    const [failedMessages, setFailedMessages] = useState<{ body: string; id: string }[]>([]);
+    const [isEditingGroupName, setIsEditingGroupName] = useState(false);
+    const [tempGroupName, setTempGroupName] = useState("");
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const scrollAreaRef = useRef<HTMLDivElement>(null);
+    const inputRef = useRef<HTMLInputElement>(null);
     const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+    const isTypingRef = useRef(false);
     const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
 
     // Convex queries & mutations
     const conversations = useQuery(api.conversations.list);
-    const allUsers = useQuery(api.users.list, { search: searchTerm });
+    const allUsers = useQuery(api.users.list, { search: debouncedSearchTerm });
     const messages = useQuery(api.messages.list, selectedConversationId ? { conversationId: selectedConversationId } : "skip");
     const presenceList = useQuery(api.presence.list);
     const typingUsers = useQuery(api.typing.list, selectedConversationId ? { conversationId: selectedConversationId } : "skip");
+    const currentUser = useQuery(api.users.getMe);
+    const selectedConversation = conversations?.find((c: any) => c?._id === selectedConversationId);
 
     const sendMessage = useMutation(api.messages.send);
     const deleteMessage = useMutation(api.messages.remove);
+    const toggleReaction = useMutation(api.reactions.toggle);
     const storeUser = useMutation(api.users.store);
     const createConversation = useMutation(api.conversations.create);
-    const updatePresence = useMutation(api.presence.update);
+    const updatePresence = useMutation(api.users.setOnline);
+    const setOffline = useMutation(api.users.setOffline);
     const markAsRead = useMutation(api.conversations.markRead);
     const setTyping = useMutation(api.typing.update);
     const removeTyping = useMutation(api.typing.remove);
+    const updateMessage = useMutation(api.messages.update);
+    const updateGroupName = useMutation(api.conversations.updateName);
 
     // Update URL when selection changes
     useEffect(() => {
@@ -83,20 +123,43 @@ function ChatContent() {
         }
     }, [isLoaded, clerkUser, storeUser]);
 
-    // Presence update interval
+    // Presence update interval & unload handler
     useEffect(() => {
+        if (!clerkUser) return;
+
+        // Mark online initially
+        updatePresence();
+
         const interval = setInterval(() => {
-            if (clerkUser) updatePresence();
-        }, 10000);
-        return () => clearInterval(interval);
-    }, [clerkUser, updatePresence]);
+            updatePresence();
+        }, 30000); // Heartbeat every 30s
+
+        const handleUnload = () => {
+            setOffline();
+        };
+
+        window.addEventListener("beforeunload", handleUnload);
+
+        return () => {
+            clearInterval(interval);
+            window.removeEventListener("beforeunload", handleUnload);
+            setOffline();
+        };
+    }, [clerkUser, updatePresence, setOffline]);
+
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            setDebouncedSearchTerm(searchTerm);
+        }, 300);
+        return () => clearTimeout(timer);
+    }, [searchTerm]);
 
     // Mark as read when conversation is selected or new messages arrive
     useEffect(() => {
-        if (selectedConversationId) {
+        if (selectedConversationId && messages && selectedConversation?.unreadCount && selectedConversation.unreadCount > 0) {
             markAsRead({ conversationId: selectedConversationId });
         }
-    }, [selectedConversationId, messages, markAsRead]);
+    }, [selectedConversationId, messages, markAsRead, selectedConversation?.unreadCount]);
 
     // Smart Auto-scroll logic
     useEffect(() => {
@@ -139,48 +202,96 @@ function ChatContent() {
         );
     };
 
+    const lastTypingTimeRef = useRef<number>(0);
     const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        setNewMessageText(e.target.value);
+        const value = e.target.value;
+        setNewMessageText(value);
 
         if (selectedConversationId) {
-            setTyping({ conversationId: selectedConversationId });
-            if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-            typingTimeoutRef.current = setTimeout(() => {
+            const now = Date.now();
+            // Send typing indication if we haven't sent one recently (every 3 seconds)
+            if (value.trim().length > 0 && (!isTypingRef.current || now - lastTypingTimeRef.current > 3000)) {
+                isTypingRef.current = true;
+                lastTypingTimeRef.current = now;
+                setTyping({ conversationId: selectedConversationId });
+            }
+
+            // If input is cleared, remove typing immediately
+            if (value.trim().length === 0 && isTypingRef.current) {
+                if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
                 removeTyping({ conversationId: selectedConversationId });
-            }, 3000);
+                isTypingRef.current = false;
+            } else {
+                // Otherwise, set a timeout to stop typing after 3 seconds of inactivity
+                if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+                typingTimeoutRef.current = setTimeout(() => {
+                    if (isTypingRef.current) {
+                        removeTyping({ conversationId: selectedConversationId });
+                        isTypingRef.current = false;
+                    }
+                }, 3000);
+            }
         }
     };
 
-    async function handleSendMessage(event: React.FormEvent) {
-        event.preventDefault();
-        const text = newMessageText.trim();
+    const [editingMessage, setEditingMessage] = useState<any>(null);
+    const [replyingTo, setReplyingTo] = useState<any>(null);
+
+    const handleSendMessage = async (event: React.FormEvent, customText?: string) => {
+        if (event) event.preventDefault();
+        const text = customText || newMessageText.trim();
         if (!text || !selectedConversationId) return;
 
         try {
-            setNewMessageText(""); // Pessimistic clear for faster feel
-            await sendMessage({
-                body: text,
-                conversationId: selectedConversationId,
-            });
-            removeTyping({ conversationId: selectedConversationId });
-            if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+            if (editingMessage) {
+                const msgId = editingMessage._id;
+                setEditingMessage(null);
+                setNewMessageText("");
+                await updateMessage({ id: msgId, body: text });
+            } else {
+                if (!customText) setNewMessageText(""); // Pessimistic clear
+                const replyId = replyingTo?._id;
+                setReplyingTo(null);
+
+                // Immediately clear typing state locally and on backend
+                if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+                isTypingRef.current = false;
+                removeTyping({ conversationId: selectedConversationId });
+
+                await sendMessage({
+                    body: text,
+                    conversationId: selectedConversationId,
+                    replyTo: replyId,
+                });
+            }
             setShouldAutoScroll(true); // Jump to bottom on my own message
+
+            // If it was a retry, remove from failed messages
+            if (customText) {
+                setFailedMessages(prev => prev.filter(m => m.body !== customText));
+            }
         } catch (error) {
             console.error("Failed to send message:", error);
-            setNewMessageText(text); // Restore on error
-            alert("Failed to send message. Please retry.");
+            if (!customText) {
+                setNewMessageText(text); // Restore on error
+                // Add to failed messages for retry
+                const tempId = Math.random().toString(36).substring(7);
+                setFailedMessages(prev => [...prev, { body: text, id: tempId }]);
+            }
         }
     }
 
-    const isUserOnline = (userId: Id<"users"> | undefined) => {
-        if (!userId) return false;
-        const presence = presenceList?.find((p: any) => p.userId === userId);
-        if (!presence) return false;
-        return Date.now() - presence.updatedAt < 30000;
+    const retryMessage = (text: string, id: string) => {
+        setFailedMessages(prev => prev.filter(m => m.id !== id));
+        handleSendMessage(undefined as any, text);
     };
 
-    const selectedConversation = conversations?.find((c: any) => c?._id === selectedConversationId);
-    const otherTypingUsers = typingUsers?.filter((name: any) => name !== clerkUser?.fullName);
+    const isUserOnline = (user: any) => {
+        if (!user) return false;
+        return user.isOnline === true;
+    };
+
+    const otherTypingUsers = typingUsers?.filter((t: any) => t.userId !== currentUser?._id);
     const isLoading = conversations === undefined || allUsers === undefined;
 
     return (
@@ -189,8 +300,10 @@ function ChatContent() {
             <aside className={`w-full md:w-80 border-r border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 flex flex-col shrink-0 transition-all duration-300 ${selectedConversationId ? "hidden md:flex" : "flex"}`}>
                 <header className="p-4 border-b border-zinc-200 dark:border-zinc-800 flex justify-between items-center bg-white dark:bg-zinc-900 z-10 shrink-0">
                     <div className="flex items-center gap-2">
-                        <div className="w-8 h-8 bg-zinc-900 dark:bg-zinc-50 rounded-lg flex items-center justify-center">
-                            <span className="text-white dark:text-zinc-900 font-bold text-lg">M</span>
+                        <div className="w-8 h-8 bg-zinc-900 dark:bg-zinc-50 rounded-lg flex items-center justify-center shadow-lg shadow-zinc-500/10">
+                            <svg className="w-5 h-5 text-white dark:text-zinc-900" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
+                            </svg>
                         </div>
                         <h1 className="font-bold text-lg dark:text-zinc-50 tracking-tight">Milan</h1>
                     </div>
@@ -278,8 +391,8 @@ function ChatContent() {
                                             }`}
                                     >
                                         <div className="relative shrink-0">
-                                            <img src={user.image} className="w-11 h-11 rounded-full object-cover ring-2 ring-white dark:ring-zinc-900" alt="" />
-                                            {isUserOnline(user._id) && (
+                                            <Avatar src={user.image} name={user.name} />
+                                            {isUserOnline(user) && (
                                                 <span className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-white dark:border-zinc-900 rounded-full"></span>
                                             )}
                                         </div>
@@ -302,7 +415,7 @@ function ChatContent() {
                                 conversations?.map((conv: any) => {
                                     if (!conv) return null;
                                     const isSelected = selectedConversationId === conv._id;
-                                    const online = conv.otherMember ? isUserOnline(conv.otherMember._id) : false;
+                                    const online = conv.otherMember ? isUserOnline(conv.otherMember) : false;
                                     return (
                                         <button
                                             key={conv._id}
@@ -311,13 +424,11 @@ function ChatContent() {
                                                 }`}
                                         >
                                             <div className="relative shrink-0">
-                                                {conv.isGroup ? (
-                                                    <div className="w-11 h-11 bg-zinc-900 dark:bg-zinc-50 rounded-full flex items-center justify-center">
-                                                        <span className="text-white dark:text-zinc-900 text-[10px] font-bold">GRP</span>
-                                                    </div>
-                                                ) : (
-                                                    <img src={conv.otherMember?.image} className="w-11 h-11 rounded-full object-cover" alt="" />
-                                                )}
+                                                <Avatar
+                                                    src={conv.isGroup ? undefined : conv.otherMember?.image}
+                                                    name={conv.isGroup ? conv.name : conv.otherMember?.name}
+                                                    isGroup={conv.isGroup}
+                                                />
                                                 {online && !conv.isGroup && (
                                                     <span className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-white dark:border-zinc-900 rounded-full"></span>
                                                 )}
@@ -325,7 +436,7 @@ function ChatContent() {
                                             <div className="flex-1 min-w-0">
                                                 <div className="flex justify-between items-baseline mb-0.5">
                                                     <div className="font-semibold text-sm dark:text-zinc-200 truncate pr-2">
-                                                        {conv.isGroup ? conv.name : conv.otherMember?.name}
+                                                        {conv.isGroup ? `${conv.name} (${conv.memberCount})` : conv.otherMember?.name}
                                                     </div>
                                                     {conv.lastMessage && (
                                                         <span className="text-[10px] text-zinc-400 whitespace-nowrap">
@@ -356,7 +467,7 @@ function ChatContent() {
                     <div className="p-4 border-t border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/30 shrink-0">
                         <div className="flex items-center gap-3">
                             <div className="relative">
-                                <img src={clerkUser.imageUrl} className="w-9 h-9 rounded-full" alt="" />
+                                <Avatar src={clerkUser.imageUrl} name={clerkUser.fullName || ""} className="w-9 h-9" />
                                 <span className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-green-500 border-2 border-zinc-50 dark:border-zinc-900 rounded-full"></span>
                             </div>
                             <div className="flex-1 min-w-0">
@@ -370,7 +481,7 @@ function ChatContent() {
 
             {/* Main Chat Area */}
             <main className={`flex-1 flex flex-col min-w-0 bg-white dark:bg-zinc-950 transition-all duration-300 ${!selectedConversationId ? "hidden md:flex" : "flex"}`}>
-                {selectedConversation ? (
+                {selectedConversationId ? (
                     <>
                         <header className="h-16 border-b border-zinc-200 dark:border-zinc-800 flex justify-between items-center px-4 md:px-6 bg-white/80 dark:bg-zinc-950/80 backdrop-blur-md z-10 shrink-0">
                             <div className="flex items-center gap-3 md:gap-4 shrink-0">
@@ -380,28 +491,73 @@ function ChatContent() {
                                 >
                                     <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
                                 </button>
-                                <div className="relative">
-                                    {selectedConversation.isGroup ? (
-                                        <div className="w-9 h-9 bg-zinc-900 dark:bg-zinc-50 rounded-full flex items-center justify-center shadow-inner">
-                                            <span className="text-white dark:text-zinc-900 text-[10px] font-bold">GRP</span>
+                                {selectedConversation && (
+                                    <>
+                                        <div className="relative">
+                                            <Avatar
+                                                src={selectedConversation.isGroup ? undefined : selectedConversation.otherMember?.image}
+                                                name={selectedConversation.isGroup ? selectedConversation.name : selectedConversation.otherMember?.name}
+                                                isGroup={selectedConversation.isGroup}
+                                                className="w-9 h-9"
+                                            />
+                                            {!selectedConversation.isGroup && selectedConversation.otherMember && isUserOnline(selectedConversation.otherMember) && (
+                                                <span className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-green-500 border-2 border-white dark:border-zinc-950 rounded-full"></span>
+                                            )}
                                         </div>
-                                    ) : (
-                                        <img src={selectedConversation.otherMember?.image} className="w-9 h-9 rounded-full object-cover shadow-sm" alt="" />
-                                    )}
-                                    {!selectedConversation.isGroup && selectedConversation.otherMember && isUserOnline(selectedConversation.otherMember._id) && (
-                                        <span className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-green-500 border-2 border-white dark:border-zinc-950 rounded-full"></span>
-                                    )}
-                                </div>
-                                <div className="min-w-0">
-                                    <h2 className="font-bold text-sm md:text-base dark:text-zinc-50 truncate tracking-tight">
-                                        {selectedConversation.isGroup ? selectedConversation.name : selectedConversation.otherMember?.name}
-                                    </h2>
-                                    <div className="text-[10px] text-zinc-400 font-medium truncate">
-                                        {selectedConversation.isGroup
-                                            ? `${selectedConversation.memberProfiles.length + 1} participants`
-                                            : isUserOnline(selectedConversation.otherMember?._id) ? "Online" : "Offline"}
-                                    </div>
-                                </div>
+                                        <div className="min-w-0">
+                                            {isEditingGroupName ? (
+                                                <input
+                                                    autoFocus
+                                                    type="text"
+                                                    value={tempGroupName}
+                                                    onChange={(e) => setTempGroupName(e.target.value)}
+                                                    onBlur={() => {
+                                                        if (tempGroupName.trim() && tempGroupName !== selectedConversation.name) {
+                                                            updateGroupName({ conversationId: selectedConversation._id, name: tempGroupName.trim() });
+                                                        }
+                                                        setIsEditingGroupName(false);
+                                                    }}
+                                                    onKeyDown={(e) => {
+                                                        if (e.key === "Enter") {
+                                                            if (tempGroupName.trim() && tempGroupName !== selectedConversation.name) {
+                                                                updateGroupName({ conversationId: selectedConversation._id, name: tempGroupName.trim() });
+                                                            }
+                                                            setIsEditingGroupName(false);
+                                                        } else if (e.key === "Escape") {
+                                                            setIsEditingGroupName(false);
+                                                        }
+                                                    }}
+                                                    className="bg-zinc-100 dark:bg-zinc-800 border-none rounded-lg px-2 py-0.5 text-sm md:text-base font-bold dark:text-zinc-50 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 w-full"
+                                                />
+                                            ) : (
+                                                <div className="flex items-center gap-2 group/title">
+                                                    <h2 className="font-bold text-sm md:text-base dark:text-zinc-50 truncate tracking-tight">
+                                                        {selectedConversation.isGroup ? selectedConversation.name : selectedConversation.otherMember?.name}
+                                                    </h2>
+                                                    {selectedConversation.isGroup && (
+                                                        <button
+                                                            onClick={() => {
+                                                                setTempGroupName(selectedConversation.name || "");
+                                                                setIsEditingGroupName(true);
+                                                            }}
+                                                            className="opacity-0 group-hover/title:opacity-100 p-1 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded transition-all text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100"
+                                                        >
+                                                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            )}
+                                            <div className="flex items-center gap-2">
+                                                <span className={`text-[10px] font-bold uppercase tracking-tight ${selectedConversation.otherMember?.isOnline ? "text-emerald-500" : "text-zinc-400 opacity-60"}`}>
+                                                    {selectedConversation.isGroup
+                                                        ? `${selectedConversation.memberProfiles.length + 1} participants`
+                                                        : selectedConversation.otherMember?.isOnline ? "Active Now" :
+                                                            selectedConversation.otherMember?.lastSeen ? `Last seen ${formatTimestamp(selectedConversation.otherMember.lastSeen)}` : "Offline"}
+                                                </span>
+                                            </div>
+                                        </div>
+                                    </>
+                                )}
                             </div>
                         </header>
 
@@ -426,50 +582,215 @@ function ChatContent() {
                                     <p className="text-zinc-500 text-sm italic">New conversation started.</p>
                                 </div>
                             ) : (
-                                <>
-                                    {messages.map((msg: any) => {
-                                        const isMe = (msg.authorId && msg.authorId === (selectedConversation as any).userId) || msg.authorName === clerkUser?.fullName;
+                                <div className="flex flex-col min-h-full">
+                                    <div className="flex-1" /> {/* Spacer to push messages to bottom if few */}
+                                    {messages.map((msg: any, index: number) => {
+                                        const isMe = (currentUser && msg.authorId === currentUser._id) || (!currentUser && msg.authorName === clerkUser?.fullName);
+                                        const isDeleted = msg.deleted === true;
+
+                                        // Chronological context (Previous = older message above)
+                                        const prevMsg = index > 0 ? messages[index - 1] : null;
+                                        const isSameSender = prevMsg && prevMsg.authorId === msg.authorId;
+
+                                        // Date Separator Logic
+                                        const currentDate = new Date(msg._creationTime).toDateString();
+                                        const prevDate = prevMsg ? new Date(prevMsg._creationTime).toDateString() : null;
+                                        const showDateSeparator = currentDate !== prevDate;
+
+                                        // Read Status Logic (for my messages)
+                                        let messageStatus = "sent"; // default
+                                        if (isMe && !isDeleted) {
+                                            const otherReadTimes = msg.readBy
+                                                ? msg.readBy.filter((r: any) => r.userId !== msg.authorId).map((r: any) => r.lastReadTime)
+                                                : [];
+                                            if (otherReadTimes.length > 0) {
+                                                const allRead = otherReadTimes.every((t: number) => t >= msg._creationTime);
+                                                const someRead = otherReadTimes.some((t: number) => t >= msg._creationTime);
+                                                if (allRead) messageStatus = "read";
+                                                else if (someRead) messageStatus = "delivered";
+                                            }
+                                        }
+
                                         return (
-                                            <div key={msg._id} className={`flex flex-col ${isMe ? "items-end" : "items-start"} animate-in fade-in slide-in-from-bottom-2 duration-300 group`}>
-                                                {!isMe && (
-                                                    <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest ml-1 mb-1.5 opacity-80">
-                                                        {msg.authorName.split(' ')[0]}
-                                                    </span>
+                                            <div key={msg._id} className="w-full flex flex-col">
+                                                {showDateSeparator && (
+                                                    <div className="flex justify-center my-6">
+                                                        <span className="bg-zinc-100 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400 text-[10px] font-bold px-3 py-1 rounded-full uppercase tracking-widest shadow-sm">
+                                                            {new Date(msg._creationTime).toLocaleDateString([], { month: 'long', day: 'numeric', year: new Date(msg._creationTime).getFullYear() === new Date().getFullYear() ? undefined : 'numeric' })}
+                                                        </span>
+                                                    </div>
                                                 )}
-                                                <div className={`relative max-w-[85%] md:max-w-[75%] transition-all ${isMe ? "bg-zinc-900 text-white rounded-2xl rounded-tr-none shadow-md" : "bg-white dark:bg-zinc-800 dark:text-zinc-100 rounded-2xl rounded-tl-none border border-zinc-100 dark:border-zinc-700/50 shadow-sm"
-                                                    }`}>
-                                                    <div className="px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap">{msg.body}</div>
 
-                                                    {isMe && (
-                                                        <button
-                                                            onClick={() => deleteMessage({ id: msg._id })}
-                                                            className="absolute -left-10 top-1/2 -translate-y-1/2 p-2 text-zinc-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-full"
-                                                        >
-                                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-                                                        </button>
-                                                    )}
+                                                <div className={`flex ${isMe ? "justify-end" : "justify-start"} ${isSameSender ? "mt-1" : "mt-6"} px-4 group/msg w-full animate-in fade-in slide-in-from-bottom-2 duration-300`}>
+                                                    <div className={`flex ${isMe ? "flex-row-reverse" : "flex-row"} items-end gap-2 max-w-[85%] md:max-w-[75%]`}>
+                                                        {/* Avatar Column (Received Messages) */}
+                                                        {!isMe && (
+                                                            <div className="w-8 shrink-0">
+                                                                {!isSameSender ? (
+                                                                    <Avatar
+                                                                        src={selectedConversation?.memberProfiles?.find((p: any) => p?._id === msg.authorId)?.image}
+                                                                        name={msg.authorName}
+                                                                        className="w-8 h-8 rounded-full shadow-sm"
+                                                                    />
+                                                                ) : (
+                                                                    <div className="w-8" />
+                                                                )}
+                                                            </div>
+                                                        )}
 
-                                                    <div className={`absolute bottom-[-18px] whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity text-[10px] text-zinc-400 ${isMe ? "right-0" : "left-0"}`}>
-                                                        {formatTimestamp(msg._creationTime)}
+                                                        {/* Message Content Column */}
+                                                        <div className={`flex flex-col ${isMe ? "items-end" : "items-start"}`}>
+                                                            {/* Group Context */}
+                                                            {selectedConversation?.isGroup && !isMe && !isSameSender && (
+                                                                <span className="text-[10px] font-bold text-zinc-500 mb-1 ml-1 uppercase tracking-tight">
+                                                                    {msg.authorName}
+                                                                </span>
+                                                            )}
+
+                                                            <div className="relative flex items-center gap-2 group">
+                                                                <div className={`relative px-4 py-2.5 text-sm leading-relaxed shadow-sm transition-all ${isMe
+                                                                    ? `bg-emerald-600 text-white shadow-emerald-500/10 ${isSameSender ? "rounded-2xl" : "rounded-2xl rounded-tr-none"}`
+                                                                    : `bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 border border-zinc-100 dark:border-zinc-700/50 ${isSameSender ? "rounded-2xl" : "rounded-2xl rounded-tl-none"}`
+                                                                    }`}>
+                                                                    {msg.repliedTo && (
+                                                                        <div className={`mb-2 p-2 rounded-lg text-[11px] border-l-4 ${isMe ? "bg-emerald-700/40 border-emerald-400" : "bg-zinc-100 dark:bg-zinc-700/50 border-zinc-300 dark:border-zinc-500"}`}>
+                                                                            <p className="font-black uppercase tracking-tighter mb-0.5">{msg.repliedTo.authorName}</p>
+                                                                            <p className="opacity-80 truncate">{msg.repliedTo.deleted ? "Message deleted" : msg.repliedTo.body}</p>
+                                                                        </div>
+                                                                    )}
+                                                                    <div className={`${isDeleted ? "italic opacity-60" : ""} whitespace-pre-wrap`}>
+                                                                        {msg.body}
+                                                                        {msg.edited && (
+                                                                            <span className="text-[10px] opacity-40 ml-1.5 font-medium select-none">(edited)</span>
+                                                                        )}
+                                                                    </div>
+
+                                                                    {/* Reactions Bar */}
+                                                                    {msg.reactions && msg.reactions.length > 0 && (
+                                                                        <div className={`absolute -bottom-4 flex flex-wrap gap-1 ${isMe ? "right-0" : "left-0"}`}>
+                                                                            {(msg.reactions as any[]).map((data) => (
+                                                                                <button
+                                                                                    key={data.emoji}
+                                                                                    onClick={() => toggleReaction({ messageId: msg._id, emoji: data.emoji })}
+                                                                                    className={`flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold border transition-all ${(currentUser && data.userIds.includes(currentUser._id))
+                                                                                        ? "bg-zinc-100 dark:bg-zinc-700 border-zinc-300 dark:border-zinc-600 text-zinc-900 dark:text-zinc-100"
+                                                                                        : "bg-white dark:bg-zinc-800 border-zinc-200 dark:border-zinc-700 text-zinc-500"
+                                                                                        }`}
+                                                                                >
+                                                                                    <span>{data.emoji}</span>
+                                                                                    <span>{data.count}</span>
+                                                                                </button>
+                                                                            ))}
+                                                                        </div>
+                                                                    )}
+
+                                                                    {/* Status Icons (Sent/Read/Delivered) - Only for Me */}
+                                                                    {isMe && !isDeleted && (
+                                                                        <div className="absolute right-2 bottom-1 flex items-center gap-0.5 opacity-60">
+                                                                            {messageStatus === "sent" && (
+                                                                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>
+                                                                            )}
+                                                                            {messageStatus === "delivered" && (
+                                                                                <div className="flex -space-x-1.5">
+                                                                                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>
+                                                                                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>
+                                                                                </div>
+                                                                            )}
+                                                                            {messageStatus === "read" && (
+                                                                                <div className="flex -space-x-1.5 text-blue-300">
+                                                                                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path d="M12.454 16.697L9.75 13.992l-1.06 1.06 3.765 3.765 8.25-8.25-1.06-1.06-7.191 7.19z" /><path d="M6.454 16.697L3.75 13.992l-1.06 1.06 3.765 3.765 8.25-8.25-1.06-1.06-7.191 7.19z" /></svg>
+                                                                                </div>
+                                                                            )}
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+
+                                                                {/* Action Overlay */}
+                                                                <div className={`flex gap-0.5 opacity-0 group-hover:opacity-100 transition-all scale-90 ${isMe ? "origin-right flex-row-reverse" : "origin-left"}`}>
+                                                                    <button
+                                                                        onClick={() => { setReplyingTo(msg); setEditingMessage(null); setTimeout(() => inputRef.current?.focus(), 0); }}
+                                                                        className="p-1 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded text-xs transition-all active:scale-125 text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100"
+                                                                    >
+                                                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" /></svg>
+                                                                    </button>
+                                                                    {["👍", "❤️", "😂", "😮", "😢"].map((emoji) => (
+                                                                        <button
+                                                                            key={emoji}
+                                                                            onClick={() => toggleReaction({ messageId: msg._id, emoji })}
+                                                                            className="p-1 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded text-xs transition-all active:scale-125"
+                                                                        >
+                                                                            {emoji}
+                                                                        </button>
+                                                                    ))}
+                                                                    {isMe && (
+                                                                        <button
+                                                                            onClick={() => { setEditingMessage(msg); setNewMessageText(msg.body); setReplyingTo(null); setTimeout(() => inputRef.current?.focus(), 0); }}
+                                                                            className="p-1 text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded transition-all"
+                                                                        >
+                                                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
+                                                                        </button>
+                                                                    )}
+                                                                    {isMe && (
+                                                                        <button
+                                                                            onClick={() => deleteMessage({ id: msg._id })}
+                                                                            className="p-1 text-zinc-400 hover:text-red-500 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded transition-all"
+                                                                        >
+                                                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                                                                        </button>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+
+                                                            {/* Subtle Timestamp */}
+                                                            <div className={`flex items-center gap-1 mt-1 opacity-0 group-hover/msg:opacity-100 transition-opacity ${isMe ? "justify-end mr-1" : "justify-start ml-1"}`}>
+                                                                <span className="text-[9px] text-zinc-400 font-medium">{formatTimestamp(msg._creationTime)}</span>
+                                                            </div>
+                                                        </div>
                                                     </div>
                                                 </div>
                                             </div>
                                         );
-                                    }).reverse()}
+                                    })}
 
-                                    {otherTypingUsers && otherTypingUsers.length > 0 && (
-                                        <div className="flex flex-col items-start animate-in fade-in slide-in-from-bottom-1 duration-300">
-                                            <div className="bg-white dark:bg-zinc-800 px-4 py-3 rounded-2xl rounded-tl-none border border-zinc-100 dark:border-zinc-700/50 shadow-sm flex gap-1 items-center">
-                                                <div className="flex gap-1">
-                                                    <span className="w-1.5 h-1.5 bg-zinc-400 rounded-full animate-bounce"></span>
-                                                    <span className="w-1.5 h-1.5 bg-zinc-400 rounded-full animate-bounce [animation-delay:0.2s]"></span>
-                                                    <span className="w-1.5 h-1.5 bg-zinc-400 rounded-full animate-bounce [animation-delay:0.4s]"></span>
+                                    {failedMessages.map((msg) => (
+                                        <div key={msg.id} className="flex flex-col items-end px-4 mt-2 animate-in fade-in slide-in-from-right-2">
+                                            <div className="flex items-center gap-2">
+                                                <button
+                                                    onClick={() => retryMessage(msg.body, msg.id)}
+                                                    className="p-1.5 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-full transition-all flex items-center gap-1 text-[10px] font-bold uppercase"
+                                                >
+                                                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                                                    Retry
+                                                </button>
+                                                <div className="bg-red-50 dark:bg-red-900/10 text-red-600 dark:text-red-400 rounded-2xl rounded-tr-none border border-red-100 dark:border-red-900/20 px-4 py-2 text-sm">
+                                                    {msg.body}
+                                                    <div className="text-[10px] font-bold opacity-60">Failed to send</div>
                                                 </div>
                                             </div>
-                                            <span className="text-[10px] text-zinc-400 mt-1.5 ml-1 font-semibold uppercase tracking-tighter">Typing...</span>
+                                        </div>
+                                    ))}
+
+                                    {otherTypingUsers && otherTypingUsers.length > 0 && (
+                                        <div className="flex flex-col items-start px-4 animate-in fade-in slide-in-from-bottom-1 duration-300">
+                                            <div className="flex items-center gap-2">
+                                                <div className="bg-white dark:bg-zinc-800 px-3 py-2 rounded-2xl rounded-tl-none border border-zinc-100 dark:border-zinc-700/50 shadow-sm flex gap-1 items-center">
+                                                    <div className="flex gap-1">
+                                                        <span className="w-1 h-1 bg-zinc-400 rounded-full animate-bounce"></span>
+                                                        <span className="w-1 h-1 bg-zinc-400 rounded-full animate-bounce [animation-delay:0.2s]"></span>
+                                                        <span className="w-1 h-1 bg-zinc-400 rounded-full animate-bounce [animation-delay:0.4s]"></span>
+                                                    </div>
+                                                </div>
+                                                <span className="text-[10px] text-zinc-400 font-bold uppercase tracking-tighter">
+                                                    {otherTypingUsers.length === 1
+                                                        ? `${otherTypingUsers[0].name} is typing...`
+                                                        : otherTypingUsers.length === 2
+                                                            ? `${otherTypingUsers[0].name} and ${otherTypingUsers[1].name} are typing...`
+                                                            : `${otherTypingUsers[0].name} and ${otherTypingUsers.length - 1} others are typing...`}
+                                                </span>
+                                            </div>
                                         </div>
                                     )}
-                                </>
+                                </div>
                             )}
                             <div ref={messagesEndRef} />
                         </div>
@@ -482,26 +803,56 @@ function ChatContent() {
                                 New Messages <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M19 14l-7 7-7-7" /></svg>
                             </button>
                         )}
+                        {shouldAutoScroll && (
+                            <div className="absolute bottom-24 right-8 z-20">
+                                {/* Handled by CSS/State above */}
+                            </div>
+                        )}
 
-                        <form onSubmit={handleSendMessage} className="p-4 border-t border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 shrink-0">
+                        <form onSubmit={handleSendMessage} className="p-4 border-t border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 shrink-0 relative">
+                            {replyingTo && (
+                                <div className="absolute bottom-full left-0 right-0 p-3 bg-zinc-50 dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-800 flex items-center justify-between animate-in slide-in-from-bottom-2 duration-300">
+                                    <div className="flex-1 min-w-0 border-l-4 border-emerald-500 pl-3">
+                                        <p className="text-[10px] font-black uppercase text-emerald-600 dark:text-emerald-400 tracking-widest">Replying to {replyingTo.authorName}</p>
+                                        <p className="text-xs text-zinc-500 truncate">{replyingTo.body}</p>
+                                    </div>
+                                    <button onClick={() => setReplyingTo(null)} className="p-2 text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-800 rounded-full transition-all">
+                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" /></svg>
+                                    </button>
+                                </div>
+                            )}
+                            {editingMessage && (
+                                <div className="absolute bottom-full left-0 right-0 p-3 bg-zinc-50 dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-800 flex items-center justify-between animate-in slide-in-from-bottom-2 duration-300">
+                                    <div className="flex-1 min-w-0 border-l-4 border-blue-500 pl-3">
+                                        <p className="text-[10px] font-black uppercase text-blue-600 dark:text-blue-400 tracking-widest">Editing Message</p>
+                                        <p className="text-xs text-zinc-500 truncate">{editingMessage.body}</p>
+                                    </div>
+                                    <button onClick={() => { setEditingMessage(null); setNewMessageText(""); }} className="p-2 text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-800 rounded-full transition-all">
+                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" /></svg>
+                                    </button>
+                                </div>
+                            )}
                             <div className="max-w-4xl mx-auto flex gap-3 items-center">
                                 <div className="flex-1 relative">
                                     <input
+                                        ref={inputRef}
                                         type="text"
+                                        placeholder={editingMessage ? "Save changes..." : "Type a message..."}
                                         value={newMessageText}
                                         onChange={handleInputChange}
-                                        placeholder="Type a message..."
-                                        className="w-full bg-zinc-100 dark:bg-zinc-800 border-none rounded-2xl px-5 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-400 dark:text-zinc-100 transition-all shadow-inner"
+                                        className="w-full bg-zinc-100 dark:bg-zinc-800 border-none rounded-2xl px-5 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50 transition-all shadow-inner"
                                     />
                                 </div>
                                 <button
                                     type="submit"
-                                    disabled={!newMessageText.trim()}
-                                    className="bg-zinc-900 dark:bg-zinc-50 text-white dark:text-zinc-900 h-11 w-11 flex items-center justify-center rounded-2xl hover:opacity-90 transition-all active:scale-95 disabled:opacity-30 shadow-lg shrink-0"
+                                    disabled={!newMessageText.trim() && !editingMessage}
+                                    className="p-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl shadow-lg shadow-emerald-500/20 transition-all active:scale-95 disabled:opacity-50 disabled:grayscale"
                                 >
-                                    <svg className="w-5 h-5 ml-0.5" fill="currentColor" viewBox="0 0 20 20">
-                                        <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" />
-                                    </svg>
+                                    {editingMessage ? (
+                                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>
+                                    ) : (
+                                        <svg className="w-5 h-5 translate-x-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" /></svg>
+                                    )}
                                 </button>
                             </div>
                         </form>

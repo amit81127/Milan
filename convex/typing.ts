@@ -75,7 +75,10 @@ export const list = query({
         return await Promise.all(
             activeTyping.map(async (t) => {
                 const user = await ctx.db.get(t.userId);
-                return user?.name || "Someone";
+                return {
+                    userId: t.userId,
+                    name: user?.name || "Someone"
+                };
             })
         );
     },

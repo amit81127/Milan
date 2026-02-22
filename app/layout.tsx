@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Convex + Next.js Chat",
+  title: "Milan",
   description: "A simple chat demo built with Convex and Next.js",
 };
 

@@ -34,9 +34,46 @@ export const store = mutation({
             email: (identity.email ?? "") as string,
             image: identity.picture as string | undefined,
             tokenIdentifier: identity.tokenIdentifier,
+            isOnline: true,
+            lastSeen: Date.now(),
         });
     },
 });
+
+export const setOnline = mutation({
+    args: {},
+    handler: async (ctx) => {
+        const identity = await ctx.auth.getUserIdentity();
+        if (!identity) return;
+
+        const user = await ctx.db
+            .query("users")
+            .withIndex("by_token", (q) => q.eq("tokenIdentifier", identity.tokenIdentifier))
+            .unique();
+
+        if (user) {
+            await ctx.db.patch(user._id, { isOnline: true, lastSeen: Date.now() });
+        }
+    },
+});
+
+export const setOffline = mutation({
+    args: {},
+    handler: async (ctx) => {
+        const identity = await ctx.auth.getUserIdentity();
+        if (!identity) return;
+
+        const user = await ctx.db
+            .query("users")
+            .withIndex("by_token", (q) => q.eq("tokenIdentifier", identity.tokenIdentifier))
+            .unique();
+
+        if (user) {
+            await ctx.db.patch(user._id, { isOnline: false, lastSeen: Date.now() });
+        }
+    },
+});
+
 export const list = query({
     args: { search: v.optional(v.string()) },
     handler: async (ctx, args) => {
@@ -49,6 +86,24 @@ export const list = query({
                 !args.search ||
                 u.name.toLowerCase().includes(args.search.toLowerCase()) ||
                 u.email.toLowerCase().includes(args.search.toLowerCase())
-            );
+            )
+            .map(u => ({
+                ...u,
+                // Fallback for real-time check if isOnline wasn't set correctly
+                isOnline: u.isOnline && (Date.now() - (u.lastSeen ?? 0) < 60000)
+            }));
+    },
+});
+
+export const getMe = query({
+    args: {},
+    handler: async (ctx) => {
+        const identity = await ctx.auth.getUserIdentity();
+        if (!identity) return null;
+
+        return await ctx.db
+            .query("users")
+            .withIndex("by_token", (q) => q.eq("tokenIdentifier", identity.tokenIdentifier))
+            .unique();
     },
 });

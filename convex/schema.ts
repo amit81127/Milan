@@ -7,13 +7,28 @@ export default defineSchema({
         authorName: v.string(),
         body: v.string(),
         conversationId: v.id("conversations"),
+        deleted: v.optional(v.boolean()),
+        replyTo: v.optional(v.id("messages")),
+        edited: v.optional(v.boolean()),
+        updatedAt: v.optional(v.number()),
     }).index("by_conversation", ["conversationId"]),
+
+    reactions: defineTable({
+        messageId: v.id("messages"),
+        userId: v.id("users"),
+        emoji: v.string(),
+    })
+        .index("by_message", ["messageId"])
+        .index("by_message_emoji", ["messageId", "emoji"])
+        .index("by_message_user", ["messageId", "userId"]),
 
     users: defineTable({
         name: v.string(),
         email: v.string(),
         image: v.optional(v.string()),
         tokenIdentifier: v.string(),
+        isOnline: v.optional(v.boolean()),
+        lastSeen: v.optional(v.number()),
     }).index("by_token", ["tokenIdentifier"]),
 
     conversations: defineTable({

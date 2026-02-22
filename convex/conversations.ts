@@ -120,6 +120,7 @@ export const list = query({
                     memberProfiles,
                     lastMessage,
                     unreadCount,
+                    memberCount: allMembers.length,
                 };
             })
         );
@@ -157,5 +158,37 @@ export const markRead = mutation({
         if (membership) {
             await ctx.db.patch(membership._id, { lastReadTime: Date.now() });
         }
+    },
+});
+
+export const updateName = mutation({
+    args: {
+        conversationId: v.id("conversations"),
+        name: v.string(),
+    },
+    handler: async (ctx, args) => {
+        const identity = await ctx.auth.getUserIdentity();
+        if (!identity) throw new Error("Unauthorized");
+
+        const user = await ctx.db
+            .query("users")
+            .withIndex("by_token", (q) => q.eq("tokenIdentifier", identity.tokenIdentifier))
+            .unique();
+
+        if (!user) throw new Error("User not found");
+
+        // Check if user is a member
+        const membership = await ctx.db
+            .query("conversationMembers")
+            .withIndex("by_conversation_user", (q) =>
+                q.eq("conversationId", args.conversationId).eq("userId", user._id)
+            )
+            .unique();
+
+        if (!membership) throw new Error("Not a member of this conversation");
+
+        await ctx.db.patch(args.conversationId, {
+            name: args.name,
+        });
     },
 });
