@@ -9,7 +9,7 @@ This project is designed for **full-stack interviews**, focusing on **real-time 
 ---
 
 ## 🚀 Live Demo
-> [Milan Live Demo](https://milan-messenger.vercel.app) *(Update with your actual link)*
+> [Milan Live Demo](https://milan-chat.vercel.app/) *(Update with your actual link)*
 
 ---
 
@@ -134,7 +134,7 @@ Open: [http://localhost:3000](http://localhost:3000)
 ## 👤 Author
 **Amit Kumar**  
 Full-Stack Developer  
-[GitHub Profile](https://github.com/amit81127) | [LinkedIn](https://linkedin.com/in/yourprofile)
+[GitHub Profile](https://github.com/amit81127) | [LinkedIn](https://linkedin.com/in/amitkumar811)
 
 ## 📄 License
 This project is built for portfolio and evaluation purposes.
