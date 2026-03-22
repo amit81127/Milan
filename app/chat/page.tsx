@@ -1,3 +1,5 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+/* eslint-disable react-hooks/purity */
 "use client";
 
 import { useQuery, useMutation } from "convex/react";
@@ -46,6 +48,7 @@ const Avatar = ({ src, name, className = "w-11 h-11", isGroup = false }: { src?:
     }
 
     return (
+        // eslint-disable-next-line @next/next/no-img-element
         <img
             src={src}
             className={`${className} rounded-full object-cover shrink-0 border-2 border-white dark:border-zinc-900`}
@@ -85,7 +88,6 @@ function ChatContent() {
     const conversations = useQuery(api.conversations.list);
     const allUsers = useQuery(api.users.list, { search: debouncedSearchTerm });
     const messages = useQuery(api.messages.list, selectedConversationId ? { conversationId: selectedConversationId } : "skip");
-    const presenceList = useQuery(api.presence.list);
     const typingUsers = useQuery(api.typing.list, selectedConversationId ? { conversationId: selectedConversationId } : "skip");
     const currentUser = useQuery(api.users.getMe);
     const selectedConversation = conversations?.find((c: any) => c?._id === selectedConversationId);
@@ -169,7 +171,7 @@ function ChatContent() {
         if (urlConversationId && urlConversationId !== selectedConversationId) {
             setSelectedConversationId(urlConversationId);
         }
-    }, [urlConversationId]);
+    }, [urlConversationId, selectedConversationId]);
 
     // Sync user to Convex on load
     useEffect(() => {

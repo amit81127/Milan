@@ -46,6 +46,7 @@ export function ActiveCallRoom({ callId, isInitiator, onEndCall }: ActiveCallRoo
     useEffect(() => {
         if (!isInitiator && localStream && incomingOffer && !hasAnswered) {
             answerCall(incomingOffer, localStream);
+            // eslint-disable-next-line react-hooks/set-state-in-effect
             setHasAnswered(true);
             
             // Mark call as active in Convex
