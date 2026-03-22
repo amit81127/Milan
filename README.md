@@ -1,140 +1,145 @@
-# Milan 💬
-## Real-Time Chat Application (WhatsApp-Style)
+# 💬 Milan — Next-Gen Real-Time Messenger
 
-Milan is a **real-time chat web application** inspired by WhatsApp and modern messaging platforms.  
-It is built using **Next.js (App Router)**, **TypeScript**, **Clerk Authentication**, and **Convex** for backend, database, and real-time subscriptions.
+<div align="center">
+  <img src="https://img.shields.io/badge/Next.js-15-black?style=for-the-badge&logo=next.js" alt="Next.js" />
+  <img src="https://img.shields.io/badge/TypeScript-007ACC?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript" />
+  <img src="https://img.shields.io/badge/Convex-000000?style=for-the-badge&logo=convex" alt="Convex" />
+  <img src="https://img.shields.io/badge/Clerk-6C47FF?style=for-the-badge&logo=clerk&logoColor=white" alt="Clerk" />
+  <img src="https://img.shields.io/badge/Tailwind_CSS-38B2AC?style=for-the-badge&logo=tailwind-css&logoColor=white" alt="Tailwind CSS" />
+  <img src="https://img.shields.io/badge/LiveKit-000000?style=for-the-badge" alt="LiveKit SFU" />
+</div>
 
-This project is designed for **full-stack interviews**, focusing on **real-time systems, clean architecture, and production-ready UX**.
+<br />
 
----
+Welcome to **Milan** — a high-performance, real-time web chat application featuring private and group conversations, presence tracking, one-to-one video calls using WebRTC, and scalable group calls via LiveKit.
 
-## 🚀 Live Demo
-> [Milan Live Demo](https://milan-messenger.vercel.app) *(Update with your actual link)*
+<details open>
+<summary><b>📖 Table of Contents</b> <i>(Click to close/expand)</i></summary>
 
----
+1. [✨ Key Features](#-key-features)
+2. [🏗️ Architectural Overview](#-architectural-overview)
+3. [🚀 Getting Started](#-getting-started)
+4. [🗄️ Database Schema](#-database-schema)
+5. [💡 Real-Time Engine Details](#-real-time-engine-details)
+6. [👥 Calling & Video Strategy](#-calling--video-strategy)
 
-## 🛠️ Tech Stack
-
-- **Frontend:** Next.js 15 (App Router), TypeScript
-- **Styling:** Tailwind CSS, shadcn/ui
-- **Authentication:** Clerk
-- **Backend & Database:** Convex (Real-time)
-- **Deployment:** Vercel
-
----
-
-## 🧭 Application Flow
-
-1. User lands on a **public landing page**.
-2. Navbar shows **Login / Sign Up** options.
-3. Authentication is seamlessly handled by **Clerk**.
-4. After login → redirected to the **Chat Dashboard**.
-5. Users can:
-   - Discover and search for other users.
-   - Start private or group conversations.
-   - Send and receive messages in real time.
-6. Logout redirects back to the landing page.
+</details>
 
 ---
 
-## ✨ Features
+## ✨ Key Features
 
-### 🔐 Authentication
-- Email & social login using Clerk.
-- Secure session handling.
-- Logged-in user name & avatar displayed.
-- User profile automatically synced and stored in Convex.
-
-### 👥 User List & Search
-- Complete list of registered users.
-- Current user excluded from the list.
-- Live search by user name.
-- Click a user to immediately open or create a conversation.
-
-### � Messaging Experience
-- **One-to-One & Groups**: Private and group chats with real-time updates.
-- **WhatsApp-Style UI**: Sender messages on the right, receiver messages on the left with avatars.
-- **Rich Interaction**: Supports message replies, emoji reactions, and soft deletion.
-- **Typing Indicators**: Real-time "User is typing..." status with name-specific feedback.
-- **Unread Counters**: Live unread message badges that clear upon opening.
-
-### ⚡ Real-Time Engine
-- Instant updates using Convex subscriptions (no polling).
-- **Online/Offline Presence**: Green dot indicators for active users with "Last Seen" support.
-- **Smart Auto-Scroll**: Intelligent scroll-to-bottom behavior with a "New Messages" shortcut.
-
-### 📱 Responsive Design
-- **Desktop**: Three-pane optimized layout.
-- **Mobile**: Dynamic navigation between conversation list and full-screen chat with back button support.
+| Feature Category | Capabilities included |
+| --- | --- |
+| **🛡️ Authentication** | Seamless & secure login via Clerk (Email & OAuth). Instant user sync to Convex. |
+| **💬 Core Chat** | One-to-one messaging, group creation, emoji reactions, and soft deleting messages. |
+| **🟢 Real-Time Engine** | Live Typing Indicators, Online/Offline Presence tracking, Unread badge counters. |
+| **🎥 Video/Audio Calls** | Native Peer-to-Peer calls (`WebRTC` & Convex Signaling). Scalable group video chats (`LiveKit` SFU). |
+| **🎨 UI/UX Excellence** | WhatsApp-style chat bubbles, auto-scroll to bottom, responsive mobile-first views using Tailwind CSS & shadcn/ui. |
 
 ---
 
-## 🗂️ Project Structure
+## 🏗️ Architectural Overview
 
-```text
-milan/
-├── app/
-│   ├── (auth)/          # Authentication routes (Sign-in/Sign-up)
-│   ├── (marketing)/     # Public landing pages
-│   └── (main)/
-│       └── chat/        # Protected chat dashboard
-├── components/
-│   ├── chat/            # Chat-specific modules (Sidebar, Input, Bubbles)
-│   ├── ui/              # Reusable UI primitives (Avatar, Buttons)
-│   └── providers/       # Context providers (Convex, Clerk)
-├── convex/
-│   ├── schema.ts        # Database schema
-│   ├── users.ts         # User management
-│   ├── conversations.ts # Chat logic
-│   └── messages.ts      # Message handling
-└── lib/                 # Utility functions & custom hooks
+**Milan** combines local optimistic UI updates with a massively scalable reactive database framework (`Convex`).
+
+```mermaid
+graph TD
+    Client[Next.js App Router] -->|useQuery / useMutation| Convex(Convex Backend Engine)
+    Client -->|Clerk Tokens| Auth(Clerk Authentication)
+    Auth -.->|Webhook/Sync| Convex
+    
+    Convex --> DB[(Reactive Document Store)]
+    
+    Client -->|WebRTC Offer/Answer| Signal[(Convex Signals Table)]
+    Client -->|Joined Room| LiveKit(LiveKit SFU Cloud)
 ```
 
 ---
 
-## ⚙️ Local Setup
+## 🚀 Getting Started
 
-### 1️⃣ Clone Repository
+<details>
+<summary><b>🔍 Prerequisites</b> <i>(Click to expand)</i></summary>
+You must have Node.js 20+ installed, along with accounts on <a href="https://clerk.dev" target="_blank">Clerk</a> and <a href="https://convex.dev" target="_blank">Convex</a>.
+</details>
+
+### 1. Clone & Install
 ```bash
 git clone https://github.com/amit81127/Milan.git
 cd Milan
-```
-
-### 2️⃣ Install Dependencies
-```bash
 npm install
 ```
 
-### 3️⃣ Environment Variables (`.env.local`)
-Create a `.env.local` file and add your keys:
+### 2. Environment Configuration
+Create a `.env.local` file at the root tracking these keys:
 ```env
-NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_...
-CLERK_SECRET_KEY=sk_...
-NEXT_PUBLIC_CONVEX_URL=https://xxxxx.convex.cloud
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY="pk_test_..."
+CLERK_SECRET_KEY="sk_test_..."
+
+# Provided by running `npx convex dev`
+NEXT_PUBLIC_CONVEX_URL="https://your-convex-instance.convex.cloud"
+
+# (Optional) Provide LiveKit keys for group calls
+LIVEKIT_API_KEY="..."
+LIVEKIT_API_SECRET="..."
+NEXT_PUBLIC_LIVEKIT_URL="..."
 ```
 
-### 4️⃣ Start Convex
+### 3. Run Development Servers
+Start your real-time backend and Next.js frontend concurrently:
 ```bash
+# Terminal 1: Starts the Convex development server & syncs schemas
 npx convex dev
-```
 
-### 5️⃣ Run Development Server
-```bash
+# Terminal 2: Starts the Next.js Frontend
 npm run dev
 ```
-Open: [http://localhost:3000](http://localhost:3000)
+Navigate to [`http://localhost:3000`](http://localhost:3000) to start chatting!
 
 ---
 
-## 🧠 Interview Explanation (Short)
-> "Milan is a high-performance, real-time messenger built to demonstrate full-stack proficiency. It leverages Next.js for a cinematic UI, Clerk for robust authentication, and Convex for a reactive backend. The app implements complex patterns like real-time presence, typing indicators, and unread tracking within a highly responsive, WhatsApp-inspired design system."
+## 🗄️ Database Schema
+
+The Convex NoSQL reactive tables defined in `schema.ts`:
+
+- **`users`**: Manages profiles mapped to Clerk tokens, tracking `isOnline` and `lastSeen`.
+- **`conversations` & `conversationMembers`**: Handles chat room groupings and keeps track of `lastReadTime` for unread badges.
+- **`messages` & `reactions`**: Standard chat history tables with emoji reaction array maps.
+- **`presence` & `typing`**: Heartbeat-based temporal tables indexing who is actively typing in which conversation.
+- **`calls` & `signals`**: Deep WebRTC integration tracking session descriptions and hardware signaling paths.
 
 ---
 
-## 👤 Author
-**Amit Kumar**  
-Full-Stack Developer  
-[GitHub Profile](https://github.com/amit81127) | [LinkedIn](https://linkedin.com/in/yourprofile)
+## 💡 Real-Time Engine Details
 
-## 📄 License
-This project is built for portfolio and evaluation purposes.
+### Presence & Typing
+Instead of heavy WebSocket `socket.io` manually bound listeners, Milan leverages **Convex Subscriptions**:
+1. When a user types, a Next.js mutation sets a timestamp in the `typing` table.
+2. The UI natively subscribes to the `typing` table via `useQuery()`.
+3. If `< 3 seconds` passed since update, the "User is typing..." badge visibly animates locally.
+
+---
+
+## 👥 Calling & Video Strategy
+
+Milan handles Audio & Video scaling elegantly by routing between two distinct engines:
+
+<details>
+<summary><b>📞 1-to-1 Calls (Native WebRTC & Convex Signaling)</b></summary>
+Handled in <code>components/chat/VideoCall.tsx</code>. A true peer-to-peer mesh networking approach. Convex is exclusively used to swap ICE Candidates and Session Descriptions. This eliminates heavy media routing costs for 1-to-1 interactions!
+</details>
+
+<details>
+<summary><b>🌐 Group Calls (LiveKit SFU)</b></summary>
+Handled in <code>components/chat/LiveKitGroupCall.tsx</code>. When 3+ people connect, Peer-to-Peer becomes CPU/Network heavy. Milan seamlessly falls back to the LiveKit Selective Forwarding Unit (SFU) pattern, routing through <code>@livekit/components-react</code> grids for high performance.
+</details>
+
+<br/>
+
+---
+
+<p align="center">
+  <i>Developed for portfolio to showcase mastery of modern frontend and complex real-time distributed capabilities.</i><br/>
+  <b>Amit Kumar</b> • <a href="https://github.com/amit81127">GitHub Profile</a>
+</p>
