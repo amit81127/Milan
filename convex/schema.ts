@@ -56,4 +56,23 @@ export default defineSchema({
         userId: v.id("users"),
         updatedAt: v.number(),
     }).index("by_conversation", ["conversationId"]),
+
+    calls: defineTable({
+        callId: v.string(),
+        conversationId: v.id("conversations"),
+        participants: v.array(v.id("users")),
+        type: v.union(v.literal("private"), v.literal("group")),
+        status: v.union(v.literal("ringing"), v.literal("active"), v.literal("ended")),
+        createdAt: v.number(),
+    })
+        .index("by_callId", ["callId"])
+        .index("by_conversation", ["conversationId"]),
+
+    signals: defineTable({
+        callId: v.string(),
+        senderId: v.id("users"),
+        type: v.union(v.literal("offer"), v.literal("answer"), v.literal("ice")),
+        data: v.any(), // WebRTC signal data object
+        createdAt: v.number(),
+    }).index("by_callId", ["callId"]),
 });

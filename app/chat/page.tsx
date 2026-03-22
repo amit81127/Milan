@@ -6,6 +6,9 @@ import { useState, useEffect, useRef, Suspense } from "react";
 import { useUser, SignOutButton } from "@clerk/nextjs";
 import { Id } from "../../convex/_generated/dataModel";
 import { useRouter, useSearchParams } from "next/navigation";
+import { ActiveCallRoom } from "../../components/chat/ActiveCallRoom";
+import { IncomingCall } from "../../components/chat/IncomingCall";
+import { Video } from "lucide-react";
 
 // --- Helper Functions ---
 const formatTimestamp = (timestamp: number) => {
@@ -99,6 +102,58 @@ function ChatContent() {
     const removeTyping = useMutation(api.typing.remove);
     const updateMessage = useMutation(api.messages.update);
     const updateGroupName = useMutation(api.conversations.updateName);
+    
+    // --- WebRTC Video Call State ---
+    const activeCallDetails = useQuery(api.calls.getActiveCall, selectedConversationId ? { conversationId: selectedConversationId } : "skip");
+    const createCallMutation = useMutation(api.calls.createCall);
+    const updateCallStatusMutation = useMutation(api.calls.updateCallStatus);
+    
+    const [activeCallRoomId, setActiveCallRoomId] = useState<string | null>(null);
+    const [isCallInitiator, setIsCallInitiator] = useState(false);
+
+    // Call Action Handlers
+    const handleStartVideoCall = async () => {
+        if (!selectedConversationId || !selectedConversation || !currentUser) return;
+        
+        let participantIds: Id<"users">[] = [];
+        if (selectedConversation.isGroup) {
+            participantIds = selectedConversation.memberProfiles?.map((m: any) => m._id) || [];
+            if (!participantIds.includes(currentUser._id)) participantIds.push(currentUser._id);
+        } else if (selectedConversation.otherMember) {
+            participantIds = [selectedConversation.otherMember._id, currentUser._id];
+        }
+
+        const callId = await createCallMutation({
+            conversationId: selectedConversationId,
+            participants: participantIds,
+            type: selectedConversation.isGroup ? "group" : "private"
+        });
+
+        setActiveCallRoomId(callId);
+        setIsCallInitiator(true);
+    };
+
+    const handleAcceptIncomingCall = () => {
+        if (activeCallDetails?.callId) {
+            setActiveCallRoomId(activeCallDetails.callId);
+            setIsCallInitiator(false);
+            updateCallStatusMutation({ callId: activeCallDetails.callId, status: "active" }).catch(console.error);
+        }
+    };
+
+    const handleRejectIncomingCall = () => {
+        if (activeCallDetails?.callId) {
+            updateCallStatusMutation({ callId: activeCallDetails.callId, status: "ended" }).catch(console.error);
+        }
+    };
+
+    // Clear active room state if the backend says the call ended
+    useEffect(() => {
+        if (activeCallDetails?.status === "ended") {
+            setActiveCallRoomId(null);
+            setIsCallInitiator(false);
+        }
+    }, [activeCallDetails?.status]);
 
     // Update URL when selection changes
     useEffect(() => {
@@ -547,7 +602,7 @@ function ChatContent() {
                                                     )}
                                                 </div>
                                             )}
-                                            <div className="flex items-center gap-2">
+                                             <div className="flex items-center gap-2">
                                                 <span className={`text-[10px] font-bold uppercase tracking-tight ${selectedConversation.otherMember?.isOnline ? "text-emerald-500" : "text-zinc-400 opacity-60"}`}>
                                                     {selectedConversation.isGroup
                                                         ? `${selectedConversation.memberProfiles.length + 1} participants`
@@ -559,6 +614,31 @@ function ChatContent() {
                                     </>
                                 )}
                             </div>
+
+                            {/* Call Button Group */}
+                            {selectedConversation && (
+                                <div className="flex items-center gap-2">
+                                    <button 
+                                        onClick={handleStartVideoCall}
+                                        className="p-2 text-zinc-400 hover:text-blue-500 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-full transition-colors flex items-center justify-center relative group"
+                                        title="Start Video Call"
+                                    >
+                                        <div className="absolute inset-0 bg-blue-500/10 rounded-full opacity-0 group-hover:opacity-100 transition-opacity" />
+                                        <Video size={22} className="relative z-10" strokeWidth={2.3} />
+                                        
+                                        {/* Status Text (Ringing/Active) */}
+                                        {activeCallDetails && activeCallDetails.status !== "ended" && (
+                                            <span className="absolute -bottom-4 text-[9px] font-bold tracking-tighter uppercase text-emerald-500 animate-pulse whitespace-nowrap">
+                                                {activeCallDetails.status}
+                                            </span>
+                                        )}
+                                    </button>
+                                    
+                                    <button className="p-2 text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-full transition-colors">
+                                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" /></svg>
+                                    </button>
+                                </div>
+                            )}
                         </header>
 
                         <div
@@ -875,6 +955,28 @@ function ChatContent() {
                     </div>
                 )}
             </main>
+
+            {/* Application WebRTC Render Layer */}
+            {activeCallRoomId && (
+                <ActiveCallRoom 
+                    callId={activeCallRoomId} 
+                    isInitiator={isCallInitiator}
+                    onEndCall={() => {
+                        setActiveCallRoomId(null);
+                        setIsCallInitiator(false);
+                    }}
+                />
+            )}
+
+            {/* Ringing Modal (If they are not the initiator and it hasn't ended) */}
+            {activeCallDetails && activeCallDetails.status === "ringing" && !isCallInitiator && activeCallRoomId !== activeCallDetails.callId && (
+                <IncomingCall 
+                    callerName={selectedConversation?.isGroup ? (selectedConversation.name || "Group Call") : (selectedConversation?.otherMember?.name || "Unknown Caller")} 
+                    callerAvatar={selectedConversation?.isGroup ? undefined : selectedConversation?.otherMember?.image}
+                    onAccept={handleAcceptIncomingCall}
+                    onReject={handleRejectIncomingCall}
+                />
+            )}
         </div>
     );
 }
